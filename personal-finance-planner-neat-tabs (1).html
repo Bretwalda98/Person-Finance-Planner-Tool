@@ -1,0 +1,785 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Personal Finance Planner — Mobile + Desktop</title>
+    <meta name="color-scheme" content="dark light">
+    <script>
+  window.tailwind = window.tailwind || {};
+  tailwind.config = { darkMode: "class" };
+</script>
+<script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      /* --- EDIT: mobile-friendly inputs/buttons and layout helpers --- */
+      .input { background: transparent; border: 1px solid rgb(51 65 85); border-radius: .75rem; padding: .5rem .75rem; min-height: 2.5rem; }
+      .btn { padding: .5rem .75rem; border-radius: .75rem; border: 1px solid rgb(51 65 85); background: rgb(30 41 59); touch-action: manipulation; }
+      .toolbar { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; }
+      .toolbar > * { flex: 0 0 auto; }
+      @media (max-width: 640px){
+        .toolbar > * { flex: 1 1 100%; } /* EDIT: stack controls on small screens */
+        table thead { position: sticky; top: 0; z-index: 1; }
+      }
+
+      #errorOverlay { position: fixed; inset: 0; display:none; background: rgba(15,23,42,.85); color:#fff; z-index:9999; }
+      #errorOverlay pre { white-space: pre-wrap; padding:16px; max-width: 960px; margin: 5vh auto; background: #1f2937; border-radius: 12px; border:1px solid #334155; }
+
+      /* EDIT: dashboard grid scales from 1 → 2 → 3 columns */
+      .dash-grid { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+      @media (min-width: 768px) { .dash-grid { grid-template-columns: 1fr 1fr; } }
+      \1
+      @media (min-width: 1536px) { .dash-grid { grid-template-columns: 1fr 1fr 1fr 1fr; } }
+
+      section { width: 100%; }
+      table { width: 100%; }
+    
+      /* EDIT: Light mode overrides */
+      html:not(.dark) .bg-slate-950 { background-color: #ffffff !important; }
+      html:not(.dark) .bg-slate-900\/40 { background-color: rgba(241,245,249,.8) !important; }  /* slate-100-ish */
+      html:not(.dark) .bg-slate-900\/60 { background-color: rgba(241,245,249,.95) !important; }
+      html:not(.dark) .bg-slate-900 { background-color: #f1f5f9 !important; }  /* slate-100 */
+      html:not(.dark) .bg-slate-800 { background-color: #e2e8f0 !important; }  /* slate-200 */
+      html:not(.dark) .bg-slate-800\/60 { background-color: rgba(226,232,240,.85) !important; }
+
+      html:not(.dark) .border-slate-800 { border-color: #cbd5e1 !important; }  /* slate-300 */
+      html:not(.dark) .border-slate-700 { border-color: #cbd5e1 !important; }
+
+      html:not(.dark) .text-slate-100 { color: #0f172a !important; }   /* slate-900 */
+      html:not(.dark) .text-slate-400 { color: #475569 !important; }   /* slate-600 */
+      html:not(.dark) .text-slate-300 { color: #334155 !important; }   /* slate-700 */
+
+      html:not(.dark) .btn { background: #f1f5f9 !important; border-color: #cbd5e1 !important; color: #0f172a !important; }
+      html:not(.dark) .input { border-color: #cbd5e1 !important; color: #0f172a !important; background: #ffffff !important; }
+
+    
+      /* EDIT: Neater tabs layout on mobile */
+      .tabs-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+      @media (min-width: 640px) { .tabs-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+      @media (min-width: 1024px) { .tabs-grid { display: flex; flex-wrap: wrap; gap: .5rem; } }
+      .tab-btn { width: 100%; justify-content: center; padding: .625rem .75rem; border-radius: .875rem; }
+
+    </style>
+  </head>
+  <body class="min-h-screen bg-white text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+    <div id="root"></div>
+    <div id="errorOverlay"><pre id="errorText"></pre></div>
+
+    <!-- React 18 + ReactDOM UMD -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Chart.js UMD -->
+    <script crossorigin src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <!-- Babel Standalone -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script>
+      window.addEventListener('error', function (e) {
+        var overlay = document.getElementById('errorOverlay');
+        var text = document.getElementById('errorText');
+        text.textContent = (e.error && e.error.stack) ? e.error.stack : (e.message || String(e));
+        overlay.style.display = 'block';
+      });
+      window.addEventListener('unhandledrejection', function (e) {
+        var overlay = document.getElementById('errorOverlay');
+        var text = document.getElementById('errorText');
+        text.textContent = e.reason && e.reason.stack ? e.reason.stack : String(e.reason || e);
+        overlay.style.display = 'block';
+      });
+    </script>
+
+    <script type="text/babel" data-presets="react">
+      const { useEffect, useMemo, useRef, useState } = React;
+
+      // ===== Utilities =====
+      const uid = () => Math.random().toString(36).slice(2, 10);
+      const todayISO = () => new Date().toISOString().slice(0, 10);
+      const monthKey = (d) => {
+        const dt = typeof d === "string" ? new Date(d) : d;
+        return dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0");
+      };
+      const fmtCurrency = (n, ccy) => new Intl.NumberFormat(undefined, { style: "currency", currency: ccy || "GBP" }).format(Number(n || 0));
+      const THIS_YEAR = new Date().getFullYear();
+
+      // ===== Copy helpers =====
+      function yearFromMonthKey(mk){ return parseInt(String(mk).split("-")[0], 10); }
+      function monthIndexFromMonthKey(mk){ return parseInt(String(mk).split("-")[1], 10) - 1; }
+      function listMonthsOfYear(year){
+        return Array.from({length:12}, (_,i) => String(year) + "-" + String(i+1).padStart(2,"0"));
+      }
+      function prevMonthKey(mk){
+        var y = yearFromMonthKey(mk), m = monthIndexFromMonthKey(mk);
+        if (m === 0) return (y-1) + "-12"; else return y + "-" + String(m).padStart(2,"0");
+      }
+      function nextMonthKey(mk){
+        var y = yearFromMonthKey(mk), m = monthIndexFromMonthKey(mk);
+        if (m === 11) return (y+1) + "-01"; else return y + "-" + String(m+2).padStart(2,"0");
+      }
+      function lastDayOfMonth(yyyy_mm){
+        var parts = yyyy_mm.split("-"); var y = parseInt(parts[0],10), m = parseInt(parts[1],10);
+        return new Date(y, m, 0).getDate();
+      }
+      function remapDatesToMonth(transactions, targetYYYYMM){
+        var maxDay = lastDayOfMonth(targetYYYYMM);
+        return transactions.map(function(t){
+          var day = String(new Date(t.date).getDate()).padStart(2,"0");
+          var clamped = Math.min(maxDay, parseInt(day,10));
+          return Object.assign({}, t, { id: uid(), date: targetYYYYMM + "-" + String(clamped).padStart(2,"0") });
+        });
+      }
+
+      // ===== Storage Hook =====
+      function useLocalState(key, initial) {
+        const [val, setVal] = useState(() => {
+          try {
+            const raw = localStorage.getItem(key);
+            return raw ? JSON.parse(raw) : initial();
+          } catch (e) { return initial(); }
+        });
+        useEffect(() => {
+          try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) {}
+        }, [key, val]);
+        return [val, setVal];
+      }
+
+      // ===== Seed =====
+      function seed() {
+        const base = {
+          version: "1.6",
+          settings: { currency: "GBP", theme: "dark", year: THIS_YEAR },
+          budget: [
+            { id: uid(), name: "Rent/Mortgage", type: "expense", monthly: 800 },
+            { id: uid(), name: "Utilities", type: "expense", monthly: 180 },
+            { id: uid(), name: "Groceries", type: "expense", monthly: 250 },
+            { id: uid(), name: "Transport", type: "expense", monthly: 120 },
+            { id: uid(), name: "Leisure", type: "expense", monthly: 150 },
+            { id: uid(), name: "Salary", type: "income", monthly: 2500 },
+            { id: uid(), name: "Side income", type: "income", monthly: 200 },
+          ],
+          months: {},
+          debts: [
+            { id: uid(), name: "Credit Card", balance: 1200, rateAPR: 24.9, minPay: 50 },
+            { id: uid(), name: "Car Loan", balance: 5400, rateAPR: 6.5, minPay: 120 },
+          ],
+          goals: [
+            { id: uid(), name: "Emergency Fund", target: 3000, saved: 1200, deadline: THIS_YEAR + "-12-31" },
+            { id: uid(), name: "Holiday", target: 800, saved: 200, deadline: THIS_YEAR + "-08-01" },
+          ],
+          networth: [{ id: uid(), date: THIS_YEAR + "-01-01", assets: 10000, liabilities: 6600 }],
+        };
+        for (var m = 0; m < 12; m++) {
+          var mk = THIS_YEAR + "-" + String(m + 1).padStart(2, "0");
+          base.months[mk] = { transactions: [], versions: [] };
+        }
+        var mkNow = monthKey(new Date());
+        base.months[mkNow].transactions.push(
+          { id: uid(), date: todayISO(), payee: "ACME Ltd", category: "Salary", amount: 2500 },
+          { id: uid(), date: todayISO(), payee: "Landlord", category: "Rent/Mortgage", amount: -800 },
+          { id: uid(), date: todayISO(), payee: "Tesco", category: "Groceries", amount: -54.21 }
+        );
+        return base;
+      }
+
+      // ===== Small Components =====
+      function Stat(props) {
+        return (
+          <div className="rounded-2xl bg-slate-900/60 border border-slate-700 p-4 shadow-lg">
+            <div className="text-slate-400 text-sm">{props.title}</div>
+            <div className="text-2xl font-semibold">{props.value}</div>
+            {props.sub ? <div className="text-slate-400 text-xs mt-1">{props.sub}</div> : null}
+          </div>
+        );
+      }
+      function Section(props) {
+        return (
+          <section className="rounded-2xl border border-slate-700 bg-slate-900/40 shadow-xl">
+            <header className="toolbar px-4 py-3 border-b border-slate-800">
+              <h2 className="text-lg font-semibold">{props.title}</h2>
+              {props.right}
+            </header>
+            <div className="p-4">{props.children}</div>
+          </section>
+        );
+      }
+
+      // ===== Chart.js wrappers =====
+      function DoughnutChart({ parts }) {
+        const ref = useRef(null);
+        const chartRef = useRef(null);
+        useEffect(() => {
+          if (!ref.current) return;
+          if (chartRef.current) chartRef.current.destroy();
+          const labels = (parts || []).map(p => p.name);
+          const data = (parts || []).map(p => p.value);
+          chartRef.current = new Chart(ref.current, {
+            type: 'doughnut',
+            data: { labels, datasets: [{ data }] },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: { legend: { labels: { color: '#cbd5e1' } } }
+            }
+          });
+          return () => { if (chartRef.current) chartRef.current.destroy(); };
+        }, [JSON.stringify(parts)]);
+        if (!parts || !parts.length) return <div className="text-sm text-slate-400">No expense data this month.</div>;
+        return <div className="h-56 sm:h-64"><canvas ref={ref} /></div>; {/* EDIT: responsive chart height */}
+      }
+
+      function LineChartComp({ series, xkey, keys }) {
+        const ref = useRef(null);
+        const chartRef = useRef(null);
+        useEffect(() => {
+          if (!ref.current) return;
+          if (chartRef.current) chartRef.current.destroy();
+          const labels = (series || []).map(r => r[xkey]);
+          const datasets = (keys || []).map(k => ({
+            label: k, data: (series || []).map(r => r[k]), borderWidth: 2, pointRadius: 0
+          }));
+          chartRef.current = new Chart(ref.current, {
+            type: 'line',
+            data: { labels, datasets },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              scales: {
+                x: { ticks: { color: '#cbd5e1' }, grid: { color: 'rgba(148,163,184,.2)' } },
+                y: { ticks: { color: '#cbd5e1' }, grid: { color: 'rgba(148,163,184,.2)' } },
+              },
+              plugins: { legend: { labels: { color: '#cbd5e1' } }, tooltip: { enabled: true } }
+            }
+          });
+          return () => { if (chartRef.current) chartRef.current.destroy(); };
+        }, [JSON.stringify(series), JSON.stringify(keys)]);
+        if (!series || !series.length) return <div className="text-sm text-slate-400">No data yet.</div>;
+        return <div className="h-56 sm:h-64"><canvas ref={ref} /></div>; {/* EDIT: responsive chart height */}
+      }
+
+      // ===== Views =====
+      function BudgetView(props) {
+        const budget = props.budget;
+        const ccy = props.ccy;
+        const setBudget = props.setBudget;
+        const plannedIncome = useMemo(function(){ return budget.filter(function(b){return b.type === "income";}).reduce(function(s,b){return s + Number(b.monthly || 0);}, 0); }, [budget]);
+        const plannedExpense = useMemo(function(){ return budget.filter(function(b){return b.type === "expense";}).reduce(function(s,b){return s + Number(b.monthly || 0);}, 0); }, [budget]);
+        const [name, setName] = useState("");
+        const [type, setType] = useState("expense");
+        const [monthly, setMonthly] = useState(0);
+        return (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Stat title="Planned Income / mo" value={fmtCurrency(plannedIncome, ccy)} />
+              <Stat title="Planned Expenses / mo" value={fmtCurrency(plannedExpense, ccy)} />
+              <Stat title="Planned Net / mo" value={fmtCurrency(plannedIncome - plannedExpense, ccy)} />
+            </div>
+            <div className="rounded-xl border border-slate-800 overflow-x-auto">
+              <table className="min-w-full text-xs sm:text-sm"> {/* EDIT: smaller text on mobile */}
+                <thead className="bg-slate-800/60 text-slate-300">
+                  <tr>
+                    <th className="text-left p-3">Name</th>
+                    <th className="text-left p-3">Type</th>
+                    <th className="text-right p-3">Monthly</th>
+                    <th className="p-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {budget.map(function(c){
+                    return (
+                      <tr key={c.id} className="border-t border-slate-800">
+                        <td className="p-3"><input className="input w-full" value={c.name} onChange={function(e){ setBudget(function(bs){ return bs.map(function(x){ return x.id === c.id ? Object.assign({}, x, { name: e.target.value }) : x; }); }); }} /></td>
+                        <td className="p-3"><select className="input w-full sm:w-auto" value={c.type} onChange={function(e){ setBudget(function(bs){ return bs.map(function(x){ return x.id === c.id ? Object.assign({}, x, { type: e.target.value }) : x; }); }); }}><option value="income">income</option><option value="expense">expense</option></select></td>
+                        <td className="p-3 text-right"><input type="number" className="input w-full sm:w-32 text-right" value={c.monthly} onChange={function(e){ setBudget(function(bs){ return bs.map(function(x){ return x.id === c.id ? Object.assign({}, x, { monthly: Number(e.target.value) }) : x; }); }); }} /></td>
+                        <td className="p-3 text-center"><button className="text-red-400 hover:text-red-300" onClick={function(){ setBudget(function(bs){ return bs.filter(function(x){ return x.id !== c.id; }); }); }}>Delete</button></td>
+                      </tr>
+                    );
+                  })}
+                  <tr className="border-t border-slate-800">
+                    <td className="p-3"><input placeholder="Name" className="input w-full" value={name} onChange={function(e){ setName(e.target.value); }} /></td>
+                    <td className="p-3"><select className="input w-full sm:w-auto" value={type} onChange={function(e){ setType(e.target.value); }}><option value="income">income</option><option value="expense">expense</option></select></td>
+                    <td className="p-3 text-right"><input type="number" className="input w-full sm:w-32 text-right" value={monthly} onChange={function(e){ setMonthly(Number(e.target.value)); }} /></td>
+                    <td className="p-3 text-center"><button className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded w-full sm:w-auto" onClick={function(){ if (!name) return; setBudget(function(bs){ return bs.concat([{ id: uid(), name: name, type: type, monthly: monthly }]); }); setName(""); setMonthly(0); }}>Add</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      }
+
+      function MonthView(props) {
+        const month = props.month;
+        const ccy = props.ccy;
+        const setMonth = props.setMonth;
+        const monthKeyVal = props.monthKeyVal;
+
+        const sums = useMemo(function(){
+          var inc = 0, exp = 0;
+          for (var i=0;i<month.transactions.length;i++){ var t = month.transactions[i]; if (t.amount >= 0) inc += t.amount; else exp += -t.amount; }
+          return { inc: inc, exp: exp };
+        }, [month.transactions]);
+        const inc = sums.inc, exp = sums.exp;
+
+        const parts = useMemo(function(){
+          var map = {};
+          for (var i=0;i<month.transactions.length;i++){ var t = month.transactions[i]; if (t.amount < 0) map[t.category] = (map[t.category] || 0) + -t.amount; }
+          var arr = []; for (var k in map) arr.push({ name: k, value: map[k] });
+          return arr;
+        }, [month.transactions]);
+
+        const daily = useMemo(function(){
+          var arr = month.transactions.slice().sort(function(a,b){ return a.date.localeCompare(b.date); });
+          var bal = 0;
+          return arr.map(function(t){ bal += Number(t.amount || 0); return { date: t.date, balance: bal }; });
+        }, [month.transactions]);
+
+        const [newTx, setNewTx] = useState({ id: uid(), date: todayISO(), payee: "", category: "", amount: 0 });
+
+        return (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Stat title="Income" value={fmtCurrency(inc, ccy)} />
+              <Stat title="Expense" value={fmtCurrency(exp, ccy)} />
+              <Stat title="Net" value={fmtCurrency(inc - exp, ccy)} />
+            </div>
+
+            <div className="rounded-xl border border-slate-800 overflow-x-auto">
+              <table className="min-w-full text-xs sm:text-sm">
+                <thead className="bg-slate-800/60 text-slate-300">
+                  <tr>
+                    <th className="text-left p-3">Date</th>
+                    <th className="text-left p-3">Payee</th>
+                    <th className="text-left p-3">Category</th>
+                    <th className="text-right p-3">Amount</th>
+                    <th className="p-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {month.transactions.map(function(t){
+                    return (
+                      <tr key={t.id} className="border-t border-slate-800">
+                        <td className="p-3"><input type="date" className="input" value={t.date} onChange={function(e){ setMonth(function(m){ return Object.assign({}, m, { transactions: m.transactions.map(function(x){ return x.id === t.id ? Object.assign({}, x, { date: e.target.value }) : x; }) }); }); }} /></td>
+                        <td className="p-3"><input className="input w-full" value={t.payee} onChange={function(e){ setMonth(function(m){ return Object.assign({}, m, { transactions: m.transactions.map(function(x){ return x.id === t.id ? Object.assign({}, x, { payee: e.target.value }) : x; }) }); }); }} /></td>
+                        <td className="p-3"><input className="input w-44" value={t.category} onChange={function(e){ setMonth(function(m){ return Object.assign({}, m, { transactions: m.transactions.map(function(x){ return x.id === t.id ? Object.assign({}, x, { category: e.target.value }) : x; }) }); }); }} /></td>
+                        <td className="p-3 text-right"><input type="number" step="0.01" className="input w-32 text-right" value={t.amount} onChange={function(e){ setMonth(function(m){ return Object.assign({}, m, { transactions: m.transactions.map(function(x){ return x.id === t.id ? Object.assign({}, x, { amount: Number(e.target.value) }) : x; }) }); }); }} /></td>
+                        <td className="p-3 text-center"><button className="text-red-400 hover:text-red-300" onClick={function(){ setMonth(function(m){ return Object.assign({}, m, { transactions: m.transactions.filter(function(x){ return x.id !== t.id; }) }); }); }}>Delete</button></td>
+                      </tr>
+                    );
+                  })}
+                  <tr className="border-t border-slate-800">
+                    <td className="p-3"><input type="date" className="input" value={newTx.date} onChange={function(e){ setNewTx(function(nt){ return Object.assign({}, nt, { date: e.target.value }); }); }} /></td>
+                    <td className="p-3"><input className="input w-full" placeholder="Payee" value={newTx.payee} onChange={function(e){ setNewTx(function(nt){ return Object.assign({}, nt, { payee: e.target.value }); }); }} /></td>
+                    <td className="p-3"><input className="input w-44" placeholder="Category" value={newTx.category} onChange={function(e){ setNewTx(function(nt){ return Object.assign({}, nt, { category: e.target.value }); }); }} /></td>
+                    <td className="p-3 text-right"><input type="number" step="0.01" className="input w-32 text-right" value={newTx.amount} onChange={function(e){ setNewTx(function(nt){ return Object.assign({}, nt, { amount: Number(e.target.value) }); }); }} /></td>
+                    <td className="p-3 text-center"><button className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded w-full sm:w-auto" onClick={function(){ if (!newTx.payee || !newTx.category) return; var tx = Object.assign({}, newTx, { id: uid() }); setMonth(function(m){ return Object.assign({}, m, { transactions: [tx].concat(m.transactions) }); }); setNewTx({ id: uid(), date: todayISO(), payee: "", category: "", amount: 0 }); }}>Add</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-4">
+              <Section title="Spending by Category (this month)">
+                <DoughnutChart parts={parts} />
+              </Section>
+              <Section title="Cumulative Balance (by date)">
+                <LineChartComp series={daily} xkey="date" keys={["balance"]} />
+              </Section>
+            </div>
+
+            <Section
+              title="Monthly Versions"
+              right={
+                <button
+                  className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded w-full sm:w-auto"
+                  onClick={function(){
+                    setMonth(function(m){
+                      return Object.assign({}, m, { versions: m.versions.concat([{
+                        id: uid(),
+                        label: new Date(monthKeyVal + "-01").toLocaleString(undefined, { month: "short" }) + " " + new Date(monthKeyVal + "-01").getFullYear() + " — v" + (m.versions.length + 1),
+                        date: new Date().toLocaleString(),
+                        snapshot: JSON.parse(JSON.stringify(m.transactions))
+                      }]) });
+                    });
+                  }}
+                >
+                  Save Version
+                </button>
+              }
+            >
+              <div className="rounded-xl border border-slate-800 overflow-x-auto">
+                <table className="min-w-full text-xs sm:text-sm">
+                  <thead className="bg-slate-800/60 text-slate-300">
+                    <tr>
+                      <th className="text-left p-3">Label</th>
+                      <th className="text-left p-3">Saved</th>
+                      <th className="p-3">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {month.versions.slice().reverse().map(function(v){
+                      return (
+                        <tr key={v.id} className="border-t border-slate-800">
+                          <td className="p-3">{v.label}</td>
+                          <td className="p-3">{v.date}</td>
+                          <td className="p-3 text-center">
+                            <div className="flex justify-center gap-2">
+                              <button className="btn" onClick={function(){ setMonth(function(m){ return Object.assign({}, m, { transactions: JSON.parse(JSON.stringify(v.snapshot)) }); }); }}>Restore</button>
+                              <button className="btn" onClick={function(){ setMonth(function(m){ return Object.assign({}, m, { versions: m.versions.filter(function(x){ return x.id !== v.id; }) }); }); }}>Delete</button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </Section>
+          </div>
+        );
+      }
+
+      function YearView(props) {
+        const year = props.year, months = props.months;
+        const data = useMemo(function(){
+          var monthsArr = Array.from({ length: 12 }, function(_, i){ return year + "-" + String(i + 1).padStart(2, "0"); });
+          return monthsArr.map(function(mk){
+            var m = months[mk] || { transactions: [], versions: [] };
+            var inc = 0, exp = 0;
+            for (var i=0;i<m.transactions.length;i++){ var t = m.transactions[i]; if (t.amount >= 0) inc += t.amount; else exp += -t.amount; }
+            return { month: mk, income: +inc.toFixed(2), expense: +exp.toFixed(2), net: +(inc - exp).toFixed(2) };
+          });
+        }, [year, months]);
+        return <div className="h-56 sm:h-72"><LineChartComp series={data} xkey="month" keys={["income","expense","net"]} /></div>;
+      }
+
+      function DebtsView(props) {
+        const debts = props.debts, setDebts = props.setDebts, ccy = props.ccy;
+        const total = debts.reduce(function(s, d){ return s + Number(d.balance || 0); }, 0);
+        const min = debts.reduce(function(s, d){ return s + Number(d.minPay || 0); }, 0);
+        return (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Stat title="Total Debt" value={fmtCurrency(total, ccy)} />
+              <Stat title="Minimums / mo" value={fmtCurrency(min, ccy)} />
+            </div>
+            <div className="rounded-xl border border-slate-800 overflow-x-auto">
+              <table className="min-w-full text-xs sm:text-sm">
+                <thead className="bg-slate-800/60 text-slate-300">
+                  <tr>
+                    <th className="text-left p-3">Name</th>
+                    <th className="text-right p-3">Balance</th>
+                    <th className="text-right p-3">APR %</th>
+                    <th className="text-right p-3">Min / mo</th>
+                    <th className="p-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {debts.map(function(d){
+                    return (
+                      <tr key={d.id} className="border-t border-slate-800">
+                        <td className="p-3"><input className="input w-full" value={d.name} onChange={function(e){ setDebts(function(ds){ return ds.map(function(x){ return x.id === d.id ? Object.assign({}, x, { name: e.target.value }) : x; }); }); }} /></td>
+                        <td className="p-3 text-right"><input type="number" className="input w-full sm:w-32 text-right" value={d.balance} onChange={function(e){ setDebts(function(ds){ return ds.map(function(x){ return x.id === d.id ? Object.assign({}, x, { balance: Number(e.target.value) }) : x; }); }); }} /></td>
+                        <td className="p-3 text-right"><input type="number" step="0.01" className="input w-full sm:w-24 text-right" value={d.rateAPR} onChange={function(e){ setDebts(function(ds){ return ds.map(function(x){ return x.id === d.id ? Object.assign({}, x, { rateAPR: Number(e.target.value) }) : x; }); }); }} /></td>
+                        <td className="p-3 text-right"><input type="number" className="input w-full sm:w-24 text-right" value={d.minPay} onChange={function(e){ setDebts(function(ds){ return ds.map(function(x){ return x.id === d.id ? Object.assign({}, x, { minPay: Number(e.target.value) }) : x; }); }); }} /></td>
+                        <td className="p-3 text-center"><button className="text-red-400 hover:text-red-300" onClick={function(){ setDebts(function(ds){ return ds.filter(function(x){ return x.id !== d.id; }); }); }}>Delete</button></td>
+                      </tr>
+                    );
+                  })}
+                  <tr className="border-t border-slate-800">
+                    <td className="p-3" colSpan="5"><button className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded w-full sm:w-auto" onClick={function(){ setDebts(function(ds){ return ds.concat([{ id: uid(), name: "New Debt", balance: 0, rateAPR: 0, minPay: 0 }]); }); }}>Add Debt</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      }
+
+      function GoalsView(props) {
+        const goals = props.goals, setGoals = props.setGoals, ccy = props.ccy;
+        const totalTarget = goals.reduce(function(s, g){ return s + Number(g.target || 0); }, 0);
+        const totalSaved = goals.reduce(function(s, g){ return s + Number(g.saved || 0); }, 0);
+        const progress = Math.round((100 * totalSaved) / Math.max(1, totalTarget));
+        const [newGoal, setNewGoal] = useState({ id: uid(), name: "", target: 0, saved: 0, deadline: todayISO() });
+        return (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Stat title="Active Goals" value={goals.length} />
+              <Stat title="Total Target" value={fmtCurrency(totalTarget, ccy)} />
+              <Stat title="Total Saved" value={fmtCurrency(totalSaved, ccy)} />
+              <Stat title="Progress" value={progress + "%"} />
+            </div>
+            <div className="grid md:grid-cols-2 gap-4">
+              {goals.map(function(g){
+                return (
+                  <div key={g.id} className="rounded-2xl border border-slate-800 p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="font-semibold text-lg">{g.name}</div>
+                      <button className="text-red-400 hover:text-red-300" onClick={function(){ setGoals(function(gs){ return gs.filter(function(x){ return x.id !== g.id; }); }); }}>Delete</button>
+                    </div>
+                    <div className="text-sm text-slate-400 mb-2">Deadline: {g.deadline || "–"}</div>
+                    <div className="text-sm">{fmtCurrency(g.saved, ccy)} / {fmtCurrency(g.target, ccy)}</div>
+                    <div className="w-full h-2 bg-slate-800 rounded mt-2 mb-3"><div className="h-2 bg-emerald-500 rounded" style={{ width: Math.min(100, (100 * g.saved) / Math.max(1, g.target)) + "%" }} /></div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="text-sm">Target<input type="number" className="input w-full mt-1" value={g.target} onChange={function(e){ setGoals(function(gs){ return gs.map(function(x){ return x.id === g.id ? Object.assign({}, x, { target: Number(e.target.value) }) : x; }); }); }} /></label>
+                      <label className="text-sm">Saved<input type="number" className="input w-full mt-1" value={g.saved} onChange={function(e){ setGoals(function(gs){ return gs.map(function(x){ return x.id === g.id ? Object.assign({}, x, { saved: Number(e.target.value) }) : x; }); }); }} /></label>
+                      <label className="text-sm col-span-2">Deadline<input type="date" className="input w-full mt-1" value={g.deadline} onChange={function(e){ setGoals(function(gs){ return gs.map(function(x){ return x.id === g.id ? Object.assign({}, x, { deadline: e.target.value }) : x; }); }); }} /></label>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="rounded-2xl border border-slate-800 p-4">
+              <div className="font-semibold mb-2">Add Goal</div>
+              <div className="grid md:grid-cols-4 gap-2">
+                <input placeholder="Name" className="input" value={newGoal.name} onChange={function(e){ setNewGoal(Object.assign({}, newGoal, { name: e.target.value })); }} />
+                <input type="number" placeholder="Target" className="input" value={newGoal.target} onChange={function(e){ setNewGoal(Object.assign({}, newGoal, { target: Number(e.target.value) })); }} />
+                <input type="number" placeholder="Saved" className="input" value={newGoal.saved} onChange={function(e){ setNewGoal(Object.assign({}, newGoal, { saved: Number(e.target.value) })); }} />
+                <input type="date" className="input" value={newGoal.deadline} onChange={function(e){ setNewGoal(Object.assign({}, newGoal, { deadline: e.target.value })); }} />
+              </div>
+              <button className="mt-3 px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded w-full sm:w-auto" onClick={function(){ if (!newGoal.name) return; setGoals(function(gs){ return gs.concat([Object.assign({}, newGoal, { id: uid() })]); }); setNewGoal({ id: uid(), name: "", target: 0, saved: 0, deadline: todayISO() }); }}>Add</button>
+            </div>
+          </div>
+        );
+      }
+
+      function CopyControls(props){
+        // EDIT: Source month defaults to previous of active; supports cross-year prev/next
+        var _a = React.useState(prevMonthKey(props.activeMonth)), source = _a[0], setSource = _a[1];
+        var _b = React.useState("append"), mode = _b[0], setMode = _b[1];
+        var _c = React.useState(true), shift = _c[0], setShift = _c[1];
+
+        React.useEffect(function(){
+          setSource(prevMonthKey(props.activeMonth));
+        }, [props.activeMonth]);
+
+        // EDIT: Dropdown shows months of the source's year (so crossing years is intuitive)
+        var months = listMonthsOfYear(yearFromMonthKey(source || props.activeMonth));
+
+        return (
+          <div className="toolbar">
+            <button className="btn" title="Previous month" onClick={function(){ setSource(prevMonthKey(source)); }}>Prev</button>
+
+            <select className="input w-full sm:w-auto" value={source} onChange={function(e){ setSource(e.target.value); }}>
+              {months.map(function(mk){ return <option key={mk} value={mk}>{new Date(mk + "-01").toLocaleString(undefined, { month: "short", year: "numeric" })}</option>; })}
+            </select>
+
+            <button className="btn" title="Next month" onClick={function(){ setSource(nextMonthKey(source)); }}>Next</button>
+
+            <select className="input w-full sm:w-auto" value={mode} onChange={function(e){ setMode(e.target.value); }}>
+              <option value="append">Append</option>
+              <option value="replace">Replace</option>
+            </select>
+
+            <label className="text-xs flex items-center gap-2"><input type="checkbox" className="accent-emerald-500" checked={shift} onChange={function(e){ setShift(e.target.checked); }} />shift dates</label>
+
+            <button className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded w-full sm:w-auto" onClick={function(){ props.onClone(source || props.activeMonth, mode, shift); }}>Copy From</button>
+          </div>
+        );
+      }
+
+      function MonthPicker(props) {
+        const year = props.year, value = props.value, onChange = props.onChange;
+        const opts = Array.from({ length: 12 }, function(_, i){ return year + "-" + String(i + 1).padStart(2, "0"); });
+        return (
+          <div className="toolbar">
+            <select className="input w-full sm:w-auto" value={value} onChange={function(e){ onChange(e.target.value); }}>
+              {opts.map(function(mk){ return <option key={mk} value={mk}>{new Date(mk + "-01").toLocaleString(undefined, { month: "short", year: "numeric" })}</option>; })}
+            </select>
+          </div>
+        );
+      }
+
+      function QuickAdd(props) {
+        const onAdd = props.onAdd;
+        const [date, setDate] = useState(todayISO());
+        const [payee, setPayee] = useState("");
+        const [category, setCategory] = useState("");
+        const [amount, setAmount] = useState(0);
+        return (
+          <div className="grid md:grid-cols-5 gap-2">
+            <input type="date" className="input" value={date} onChange={function(e){ setDate(e.target.value); }} />
+            <input placeholder="Payee" className="input" value={payee} onChange={function(e){ setPayee(e.target.value); }} />
+            <input placeholder="Category" className="input" value={category} onChange={function(e){ setCategory(e.target.value); }} />
+            <input type="number" step="0.01" className="input" value={amount} onChange={function(e){ setAmount(Number(e.target.value)); }} />
+            <button className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded w-full sm:w-auto" onClick={function(){ onAdd({ id: uid(), date: date, payee: payee, category: category, amount: amount }); }}>Add</button>
+          </div>
+        );
+      }
+
+      function ensureYear(data, year){
+        var changed = false;
+        var months = Object.assign({}, data.months);
+        listMonthsOfYear(year).forEach(function(mk){
+          if (!months[mk]){ months[mk] = { transactions: [], versions: [] }; changed = true; }
+        });
+        return changed ? Object.assign({}, data, { months: months }) : data;
+      }
+
+      function App() {
+        const pair = useLocalState("pf_year_planner_v1", seed);
+        const data = pair[0];
+        const setData = pair[1];
+        const settings = data.settings;
+        const [tab, setTab] = useState("overview");
+        const [activeMonth, setActiveMonth] = useState(monthKey(new Date()));
+
+        useEffect(function(){
+          document.documentElement.classList.toggle('dark', settings.theme === 'dark');
+        }, [settings.theme]);
+
+        // Ensure current year months exist on first load
+        useEffect(function(){ setData(function(d){ return ensureYear(d, d.settings.year); }); }, []);
+
+        function setSettings(f){ setData(function(d){ return Object.assign({}, d, { settings: f(d.settings) }); }); }
+        function setBudget(f){ setData(function(d){ return Object.assign({}, d, { budget: f(d.budget) }); }); }
+        function setMonth(mk, f){ setData(function(d){ var nextMonths = Object.assign({}, d.months); nextMonths[mk] = f(d.months[mk]); return Object.assign({}, d, { months: nextMonths }); }); }
+        function setDebts(f){ setData(function(d){ return Object.assign({}, d, { debts: f(d.debts) }); }); }
+        function setGoals(f){ setData(function(d){ return Object.assign({}, d, { goals: f(d.goals) }); }); }
+        function setNetworth(f){ setData(function(d){ return Object.assign({}, d, { networth: f(d.networth) }); }); }
+
+        const plannedIncome = useMemo(function(){ return data.budget.filter(function(c){ return c.type === "income"; }).reduce(function(s, c){ return s + Number(c.monthly || 0); }, 0); }, [data.budget]);
+        const plannedExpenses = useMemo(function(){ return data.budget.filter(function(c){ return c.type === "expense"; }).reduce(function(s, c){ return s + Number(c.monthly || 0); }, 0); }, [data.budget]);
+        const monthAgg = useMemo(function(){
+          var inc = 0, exp = 0;
+          var list = (data.months[activeMonth] && data.months[activeMonth].transactions) ? data.months[activeMonth].transactions : [];
+          for (var i=0;i<list.length;i++){ var t = list[i]; if (t.amount >= 0) inc += t.amount; else exp += -t.amount; }
+          return { inc: inc, exp: exp, net: inc - exp };
+        }, [data.months, activeMonth]);
+
+        function exportJSON(){
+          var blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement("a");
+          a.href = url;
+          a.download = "personal_finance_" + data.settings.year + ".json";
+          a.click();
+          URL.revokeObjectURL(url);
+        }
+
+        return (
+          <div className="min-h-screen bg-slate-950 text-slate-100">
+            <div className="w-full mx-auto px-4 sm:px-6 py-6">
+              {/* Header */}
+              <div className="toolbar mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-emerald-600 grid place-content-center font-bold">£</div>
+                  <div>
+                    <div className="text-xl font-semibold">Personal Finance Planner</div>
+                    <div className="text-xs text-slate-400">Year overview • Monthly versions • Debts • Goals • Net Worth</div>
+                  </div>
+                </div>
+                <div className="toolbar">
+                  <select className="input w-full sm:w-auto" value={settings.year} onChange={function(e){
+                    var y = parseInt(e.target.value,10);
+                    setData(function(d){ var next = Object.assign({}, d, { settings: Object.assign({}, d.settings, { year: y }) }); return ensureYear(next, y); });
+                    setActiveMonth(String(parseInt(e.target.value,10)) + "-01");
+                  }}>
+                    {Array.from({length:7}, function(_,i){ var y = THIS_YEAR-3+i; return <option key={y} value={y}>{y}</option>; })}
+                  </select>
+                  <select className="input w-full sm:w-auto" value={settings.currency} onChange={function(e){ setSettings(function(s){ return Object.assign({}, s, { currency: e.target.value }); }); }}>
+                    {"GBP,USD,EUR,CAD,AUD,JPY,INR".split(",").map(function(ccy){ return <option key={ccy} value={ccy}>{ccy}</option>; })}
+                  </select>
+                  <button className="btn" onClick={function(){ setSettings(function(s){ return Object.assign({}, s, { theme: s.theme === "dark" ? "light" : "dark" }); }); }}>{settings.theme === "dark" ? "Dark" : "Light"}</button>
+                  <button className="btn" onClick={exportJSON}>Export</button>
+                  <label className="btn cursor-pointer">Import
+                    <input type="file" accept="application/json" className="hidden" onChange={function(e){
+                      var f = e.target.files && e.target.files[0];
+                      if (!f) return;
+                      var r = new FileReader();
+                      r.onload = function(){
+                        try { var obj = JSON.parse(String(r.result)); setData(obj); }
+                        catch (err) { alert("Invalid JSON"); }
+                      };
+                      r.readAsText(f);
+                    }} />
+                  </label>
+                  <button className="px-3 py-2 bg-red-600 hover:bg-red-500 rounded w-full sm:w-auto" onClick={function(){ setData(seed()); }}>Reset</button>
+                </div>
+              </div>
+
+              {/* Overview Stats */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+                <Stat title="Planned Income / mo" value={fmtCurrency(plannedIncome, settings.currency)} />
+                <Stat title="Planned Expenses / mo" value={fmtCurrency(plannedExpenses, settings.currency)} />
+                <Stat title="Planned Net / mo" value={fmtCurrency(plannedIncome - plannedExpenses, settings.currency)} />
+                <Stat title="This Month Net" value={fmtCurrency(monthAgg.net, settings.currency)} sub={fmtCurrency(monthAgg.inc, settings.currency) + " in • " + fmtCurrency(monthAgg.exp, settings.currency) + " out"} />
+              </div>
+
+              {/* Tabs */}
+              <div className="tabs-grid mb-4">
+                {[ ["overview","Overview"],["budget","Budget"],["month","Month"],["year","Year"],["debts","Debts"],["goals","Goals"],["networth","Net Worth"],["help","Help"] ].map(function(pair){
+                  var k = pair[0], label = pair[1];
+                  return <button key={k} className={"tab-btn border " + (tab === k ? "bg-emerald-600 border-emerald-500" : "bg-slate-900 border-slate-700")} onClick={function(){ setTab(k); }}>{label}</button>;
+                })}
+              </div>
+
+              {/* Panels */}
+              {tab === "overview" ? (
+                <div className="dash-grid">
+                  <Section title="This Month — Spending by Category">
+                    <DoughnutChart parts={(function(){ var m = data.months[activeMonth] || { transactions: [], versions: [] }; var parts = {}; for (var i=0;i<m.transactions.length;i++){ var t = m.transactions[i]; if (t.amount < 0) parts[t.category] = (parts[t.category] || 0) + -t.amount; } var out = []; for (var k in parts) out.push({ name: k, value: parts[k] }); return out; })()} />
+                  </Section>
+                  <Section title="Cashflow by Month" right={<span className="text-xs text-slate-400">Last 12 months</span>}>
+                    <LineChartComp series={(function(){ var map = {}; Object.keys(data.months).forEach(function(mk){ var m = data.months[mk]; var inc=0,exp=0; for (var i=0;i<m.transactions.length;i++){ var t=m.transactions[i]; if (t.amount>=0) inc+=t.amount; else exp+=-t.amount; } map[mk]={ income:inc, expense:exp }; }); return Object.keys(map).sort().slice(-12).map(function(m){ var v = map[m]; return { month:m, income:+v.income.toFixed(2), expense:+v.expense.toFixed(2), net:+(v.income-v.expense).toFixed(2) }; }); })()} xkey="month" keys={["income","expense","net"]} />
+                  </Section>
+                  <Section title="Quick Add Transaction"><QuickAdd onAdd={function(tx){ setMonth(activeMonth, function(m){ return Object.assign({}, m, { transactions: [tx].concat(m.transactions) }); }); }} /></Section>
+                </div>
+              ) : null}
+
+              {tab === "budget" ? (<Section title="Budget"><BudgetView budget={data.budget} setBudget={setBudget} ccy={settings.currency} /></Section>) : null}
+
+              {tab === "month" ? (
+                <Section
+                  title="Month"
+                  right={
+                    <div className="toolbar">
+                      <MonthPicker year={data.settings.year} value={activeMonth} onChange={setActiveMonth} />
+                      <CopyControls
+                        months={data.months}
+                        activeMonth={activeMonth}
+                        onClone={function(source, mode, shift){
+                          setMonth(activeMonth, function(m){
+                            var src = data.months[source] || { transactions: [] };
+                            var txs = shift
+                              ? remapDatesToMonth(src.transactions, activeMonth)
+                              : src.transactions.map(function(t){ return Object.assign({}, t, { id: uid() }); });
+                            return Object.assign({}, m, { transactions: mode === "replace" ? txs : txs.concat(m.transactions) });
+                          });
+                        }}
+                      />
+                    </div>
+                  }
+                >
+                  <MonthView monthKeyVal={activeMonth} month={data.months[activeMonth]} setMonth={function(f){ setMonth(activeMonth, f); }} ccy={settings.currency} />
+                </Section>
+              ) : null}
+
+              {tab === "year" ? (<Section title="Year"><YearView year={data.settings.year} months={data.months} /></Section>) : null}
+
+              {tab === "debts" ? (<Section title="Debts"><DebtsView debts={data.debts} setDebts={setDebts} ccy={settings.currency} /></Section>) : null}
+
+              {tab === "goals" ? (<Section title="Goals"><GoalsView goals={data.goals} setGoals={setGoals} ccy={settings.currency} /></Section>) : null}
+
+              {tab === "networth" ? (<Section title="Net Worth"><NetWorthView rows={data.networth} setRows={setNetworth} ccy={settings.currency} /></Section>) : null}
+
+              {tab === "help" ? (
+                <Section title="How to use">
+                  <ol className="list-decimal pl-5 space-y-2 text-sm text-slate-300">
+                    <li>Use <span className="font-medium">Budget</span> to set planned monthly income & expenses.</li>
+                    <li>In <span className="font-medium">Month</span>, pick a month; add transactions. Use <span className="font-medium">Save Version</span> to snapshot and restore later.</li>
+                    <li><span className="font-medium">Year</span> shows 12‑month income/expense/net.</li>
+                    <li><span className="font-medium">Debts</span>, <span className="font-medium">Goals</span>, and <span className="font-medium">Net Worth</span> are tracked at the yearly level.</li>
+                    <li>All data is stored locally. Use <span className="font-medium">Export/Import</span> to back up.</li>
+                  </ol>
+                </Section>
+              ) : null}
+
+              <footer className="mt-8 text-center text-xs text-slate-500">React (single file) • Local only • v1.6 (Mobile + Desktop)</footer>
+            </div>
+          </div>
+        );
+      }
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+</html>

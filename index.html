@@ -1,4 +1,4 @@
-<!doctype html>
+    <!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -27,7 +27,6 @@
       /* EDIT: dashboard grid scales from 1 → 2 → 3 columns */
       .dash-grid { display: grid; grid-template-columns: 1fr; gap: 1rem; }
       @media (min-width: 768px) { .dash-grid { grid-template-columns: 1fr 1fr; } }
-      \1
       @media (min-width: 1536px) { .dash-grid { grid-template-columns: 1fr 1fr 1fr 1fr; } }
 
       section { width: 100%; }
@@ -55,8 +54,9 @@
       /* EDIT: Neater tabs layout on mobile */
       .tabs-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
       @media (min-width: 640px) { .tabs-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
-      @media (min-width: 1024px) { .tabs-grid { display: flex; flex-wrap: wrap; gap: .5rem; } }
+      @media (min-width: 1024px) { .tabs-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); gap: .5rem; max-width: 1200px; margin-inline: auto; } }
       .tab-btn { width: 100%; justify-content: center; padding: .625rem .75rem; border-radius: .875rem; }
+      @media (min-width: 1024px) { .tab-btn { width: auto; } }
 
     </style>
   </head>
@@ -157,8 +157,8 @@
           ],
           months: {},
           debts: [
-            { id: uid(), name: "Credit Card", balance: 1200, rateAPR: 24.9, minPay: 50 },
-            { id: uid(), name: "Car Loan", balance: 5400, rateAPR: 6.5, minPay: 120 },
+            { id: uid(), name: "Credit Card", balance: 1200, rateAPR: 24.9, minPay: 50, type: "revolving", minPayPct: 3, extraMonthly: 0 },
+            { id: uid(), name: "Car Loan", balance: 5400, rateAPR: 6.5, minPay: 120, type: "installment", minPayPct: 0, extraMonthly: 0, termMonths: 48 },
           ],
           goals: [
             { id: uid(), name: "Emergency Fund", target: 3000, saved: 1200, deadline: THIS_YEAR + "-12-31" },
@@ -254,6 +254,58 @@
       }
 
       // ===== Views =====
+      function NetWorthView(props){
+        const rows = props.rows || [];
+        const setRows = props.setRows;
+        const ccy = props.ccy;
+        const totalAssets = rows.reduce((s,r)=>s+Number(r.assets||0),0);
+        const totalLiabs  = rows.reduce((s,r)=>s+Number(r.liabilities||0),0);
+        const net = totalAssets - totalLiabs;
+        return (
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-3">
+              <Stat title="Assets (sum)" value={fmtCurrency(totalAssets, ccy)} />
+              <Stat title="Liabilities (sum)" value={fmtCurrency(totalLiabs, ccy)} />
+              <Stat title="Net" value={fmtCurrency(net, ccy)} />
+            </div>
+            <div className="rounded-xl border border-slate-800 overflow-x-auto">
+              <table className="min-w-full text-xs sm:text-sm">
+                <thead className="bg-slate-800/60 text-slate-300">
+                  <tr>
+                    <th className="text-left p-3">Date</th>
+                    <th className="text-right p-3">Assets</th>
+                    <th className="text-right p-3">Liabilities</th>
+                    <th className="text-right p-3">Net</th>
+                    <th className="p-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.id} className="border-t border-slate-800">
+                      <td className="p-3"><input type="date" className="input" value={r.date} onChange={(e)=>setRows(rs=>rs.map(x=>x.id===r.id?Object.assign({},x,{date:e.target.value}):x))} /></td>
+                      <td className="p-3 text-right"><input type="number" className="input w-full sm:w-32 text-right" value={r.assets} onChange={(e)=>setRows(rs=>rs.map(x=>x.id===r.id?Object.assign({},x,{assets:Number(e.target.value)}):x))} /></td>
+                      <td className="p-3 text-right"><input type="number" className="input w-full sm:w-32 text-right" value={r.liabilities} onChange={(e)=>setRows(rs=>rs.map(x=>x.id===r.id?Object.assign({},x,{liabilities:Number(e.target.value)}):x))} /></td>
+                      <td className="p-3 text-right">{fmtCurrency((Number(r.assets||0)-Number(r.liabilities||0)), ccy)}</td>
+                      <td className="p-3 text-center">
+                        <button className="text-red-400 hover:text-red-300" onClick={()=>setRows(rs=>rs.filter(x=>x.id!==r.id))}>Delete</button>
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="border-t border-slate-800">
+                    <td className="p-3" colSpan="5">
+                      <button className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded w-full sm:w-auto"
+                        onClick={()=>setRows(rs=>rs.concat([{ id: uid(), date: todayISO(), assets: 0, liabilities: 0 }]))}>
+                        Add Entry
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      }
+    
       function BudgetView(props) {
         const budget = props.budget;
         const ccy = props.ccy;
@@ -540,7 +592,315 @@
         );
       }
 
-      function CopyControls(props){
+      
+      // ===== Debts Pro (Payoff Planner) =====
+      function DebtsViewPro(props){
+        const debts = (props.debts || []).map(d => ({
+          id: d.id, name: d.name || "Debt",
+          balance: Number(d.balance || 0),
+          rateAPR: Number(d.rateAPR || 0),
+          minPay: Number(d.minPay || 0),
+          // new/advanced fields (backwards compatible):
+          type: d.type || "revolving",        // "revolving" or "installment"
+          minPayPct: Number(d.minPayPct || 0),// % of balance (revolving)
+          extraMonthly: Number(d.extraMonthly || 0), // extra to this debt
+          termMonths: Number(d.termMonths || 0) // optional, for installment
+        }));
+        const setDebts = props.setDebts;
+        const ccy = props.ccy;
+
+        // planner state persisted separately
+        const [plan, setPlan] = useLocalState("pf_debt_plan_v1", () => ({
+          strategy: "avalanche",  // "avalanche" | "snowball"
+          monthlyBudget: 0,       // if 0 => sum(mins)+sum(extras)
+          aprShock: 0,            // adds to APR for stress test
+          maxMonths: 600
+        }));
+
+        // Helpers
+        const round2 = (x) => Math.round((+x + Number.EPSILON) * 100) / 100;
+        function minPaymentFor(balance, apr, baseMin, pct, typ, aprAdj){
+          const monthlyRate = (Math.max(0, apr + (aprAdj || 0)) / 100) / 12;
+          const interest = balance * monthlyRate;
+          let m = Number(baseMin || 0);
+          if (typ === "revolving" && Number(pct) > 0){
+            m = Math.max(m, balance * (Number(pct)/100));
+          }
+          // ensure we reduce principal very slightly to avoid negative amortization
+          const floor = interest > 0 ? (interest + 1) : 0;
+          m = Math.max(m, floor);
+          // don't pay beyond payoff
+          return Math.min(balance + interest, m);
+        }
+
+        function simulate(allDebts, plan){
+          const items = allDebts.map(d => ({
+            id: d.id, name: d.name, balance: round2(d.balance),
+            rateAPR: d.rateAPR, minPay: d.minPay, minPayPct: d.minPayPct,
+            type: d.type, extraMonthly: d.extraMonthly, interestPaid: 0, months: 0
+          }));
+          const series = [];
+          const payoffMonth = {};
+          const warnings = [];
+          const start = new Date(); start.setDate(1); // first of this month
+          let monthCursor = new Date(start);
+          let totalInterest = 0;
+
+          const active = () => items.filter(x => x.balance > 0.009);
+
+          // compute dynamic budget (mins + extras) if 0
+          let dynBudget = 0;
+          if (!plan.monthlyBudget){
+            for (const d of items){
+              const m = minPaymentFor(d.balance, d.rateAPR, d.minPay, d.minPayPct, d.type, plan.aprShock);
+              dynBudget += m + (d.extraMonthly || 0);
+            }
+          }
+
+          for (let k=0; k<plan.maxMonths && active().length; k++){
+            const monthStr = monthCursor.toISOString().slice(0,7);
+            // 1) Interest + minimums
+            let required = 0;
+            const mins = new Map();
+            for (const d of active()){
+              const m = minPaymentFor(d.balance, d.rateAPR, d.minPay, d.minPayPct, d.type, plan.aprShock);
+              mins.set(d.id, m);
+              required += m;
+            }
+            let budget = plan.monthlyBudget ? plan.monthlyBudget : dynBudget;
+            budget = Math.max(0, budget);
+
+            if (budget + 1e-6 < required){
+              warnings.push(`Budget (${fmtCurrency(budget, ccy)}) is below total minimums (${fmtCurrency(required, ccy)}). Negative amortization risk.`);
+            }
+
+            // 2) Apply minimums
+            let remaining = budget;
+            for (const d of active()){
+              const m = Math.min(mins.get(d.id), remaining);
+              // compute interest to track
+              const monthlyRate = (Math.max(0, d.rateAPR + plan.aprShock) / 100) / 12;
+              const interest = d.balance * monthlyRate;
+              d.balance = round2(d.balance + interest - m);
+              d.interestPaid = round2(d.interestPaid + interest);
+              totalInterest = round2(totalInterest + interest);
+              d.months += 1;
+              remaining = round2(remaining - m);
+            }
+
+            // 3) Snowball/Avalanche extra allocation
+            const sel = active().slice().sort((a,b) => {
+              if (plan.strategy === "avalanche"){
+                // highest APR first
+                if (b.rateAPR !== a.rateAPR) return b.rateAPR - a.rateAPR;
+                return b.balance - a.balance;
+              } else {
+                // snowball: smallest balance first
+                if (a.balance !== b.balance) return a.balance - b.balance;
+                return b.rateAPR - a.rateAPR;
+              }
+            });
+
+            // add per-debt extraMonthly first
+            for (const d of sel){
+              if (remaining <= 0) break;
+              const take = Math.min(remaining, d.balance > 0 ? (d.extraMonthly || 0) : 0);
+              d.balance = round2(d.balance - take);
+              remaining = round2(remaining - take);
+            }
+            // then concentrate remaining onto target debts in order
+            for (const d of sel){
+              if (remaining <= 0) break;
+              const take = Math.min(remaining, d.balance);
+              d.balance = round2(d.balance - take);
+              remaining = round2(remaining - take);
+            }
+
+            for (const d of items){
+              if (d.balance <= 0.009 && payoffMonth[d.id] == null){
+                payoffMonth[d.id] = monthStr;
+              }
+            }
+
+            // snapshot total
+            const totalBal = round2(items.reduce((s,x)=>s + Math.max(0,x.balance), 0));
+            series.push({ month: monthStr, balance: totalBal });
+            // next month
+            monthCursor.setMonth(monthCursor.getMonth()+1);
+          }
+
+          const months = series.length;
+          return { series, months, totalInterest, payoffMonth, warnings,
+                   perDebt: items.map(d => ({
+                     id: d.id, name: d.name, months: d.months,
+                     interestPaid: round2(d.interestPaid),
+                     payoff: payoffMonth[d.id] || "—"
+                   })) };
+        }
+
+        // compute live aggregates
+        const totalDebt = debts.reduce((s,d)=>s + d.balance, 0);
+        const totalMin = debts.reduce((s,d)=>{
+          return s + minPaymentFor(d.balance, d.rateAPR, d.minPay, d.minPayPct, d.type, 0);
+        }, 0);
+        const defaultBudget = round2(totalMin + debts.reduce((s,d)=>s + (d.extraMonthly||0),0));
+        const planBudget = plan.monthlyBudget && plan.monthlyBudget > 0 ? plan.monthlyBudget : defaultBudget;
+
+        const sim = simulate(debts, plan);
+        const dfDate = (()=>{
+          const d = new Date(); d.setDate(1); d.setMonth(d.getMonth()+sim.months-1);
+          return isFinite(+d) && sim.months>0 ? d.toLocaleString(undefined, { month:"short", year:"numeric" }) : "—";
+        })();
+
+        return (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Stat title="Total Debt" value={fmtCurrency(totalDebt, ccy)} />
+              <Stat title="Minimums / mo" value={fmtCurrency(totalMin, ccy)} />
+              <Stat title="Plan Budget / mo" value={fmtCurrency(planBudget, ccy)} />
+              <Stat title="Debt‑free by" value={dfDate} sub={(sim.months||0) + " months"} />
+            </div>
+
+            <Section title="Payoff Planner" right={
+              <div className="toolbar">
+                <select className="input w-full sm:w-auto" value={plan.strategy}
+                  onChange={e=>setPlan(p=>Object.assign({},p,{strategy:e.target.value}))}>
+                  <option value="avalanche">Avalanche (APR ↓)</option>
+                  <option value="snowball">Snowball (Balance ↑)</option>
+                </select>
+                <input type="number" className="input w-28 text-right" placeholder="Budget / mo"
+                  value={plan.monthlyBudget}
+                  onChange={e=>setPlan(p=>Object.assign({},p,{monthlyBudget:Number(e.target.value)}))} />
+                <label className="text-xs flex items-center gap-2">
+                  APR shock
+                  <input type="number" className="input w-20 text-right" value={plan.aprShock}
+                    onChange={e=>setPlan(p=>Object.assign({},p,{aprShock:Number(e.target.value)}))} />
+                  <span className="text-slate-400">%</span>
+                </label>
+                <button className="btn" onClick={()=>setPlan(p=>Object.assign({},p))}>Recalculate</button>
+              </div>
+            }>
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
+                  <div className="text-sm text-slate-300 mb-2">Total Balance Over Time</div>
+                  <LineChartComp series={sim.series} xkey="month" keys={["balance"]} />
+                </div>
+                <div className="rounded-2xl border border-slate-800 p-4">
+                  <div className="font-semibold mb-2">Payoff Order & Stats</div>
+                  <div className="max-h-64 overflow-auto">
+                    <table className="min-w-full text-xs sm:text-sm">
+                      <thead className="bg-slate-800/60 text-slate-300">
+                        <tr>
+                          <th className="text-left p-2">Debt</th>
+                          <th className="text-right p-2">Months</th>
+                          <th className="text-right p-2">Interest</th>
+                          <th className="text-left p-2">Paid Off</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sim.perDebt.map(r=>(
+                          <tr key={r.id} className="border-t border-slate-800">
+                            <td className="p-2">{r.name}</td>
+                            <td className="p-2 text-right">{r.months}</td>
+                            <td className="p-2 text-right">{fmtCurrency(r.interestPaid, ccy)}</td>
+                            <td className="p-2">{r.payoff}</td>
+                          </tr>
+                        ))}
+                        <tr className="border-t border-slate-800">
+                          <td className="p-2 font-semibold">Total</td>
+                          <td className="p-2 text-right">{sim.months}</td>
+                          <td className="p-2 text-right">{fmtCurrency(sim.totalInterest, ccy)}</td>
+                          <td className="p-2">—</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  {sim.warnings.length ? (
+                    <div className="mt-3 text-xs text-amber-300">
+                      {sim.warnings.map((w,i)=>(<div key={i}>• {w}</div>))}
+                    </div>
+                  ) : null}
+                  <button className="mt-3 px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded w-full sm:w-auto"
+                    onClick={()=>{
+                      // export series as CSV
+                      const rows = [["Month","Total Balance"]].concat(sim.series.map(r=>[r.month, r.balance]));
+                      const csv = rows.map(r=>r.map(x=>String(x)).join(",")).join("\n");
+                      const blob = new Blob([csv], {type:"text/csv"});
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url; a.download = "debt_payoff_timeline.csv"; a.click();
+                      URL.revokeObjectURL(url);
+                    }}>Export Timeline CSV</button>
+                </div>
+              </div>
+            </Section>
+
+            <div className="rounded-2xl border border-slate-800 overflow-x-auto">
+              <table className="min-w-full text-xs sm:text-sm">
+                <thead className="bg-slate-800/60 text-slate-300">
+                  <tr>
+                    <th className="text-left p-3">Name</th>
+                    <th className="text-left p-3">Type</th>
+                    <th className="text-right p-3">Balance</th>
+                    <th className="text-right p-3">APR %</th>
+                    <th className="text-right p-3">Min / mo</th>
+                    <th className="text-right p-3">Min %</th>
+                    <th className="text-right p-3">Extra / mo</th>
+                    <th className="p-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {debts.map(d => (
+                    <tr key={d.id} className="border-t border-slate-800">
+                      <td className="p-3">
+                        <input className="input w-full" value={d.name} onChange={e=>setDebts(ds=>ds.map(x=>x.id===d.id?Object.assign({},x,{name:e.target.value}):x))} />
+                      </td>
+                      <td className="p-3">
+                        <select className="input w-full sm:w-auto" value={d.type} onChange={e=>setDebts(ds=>ds.map(x=>x.id===d.id?Object.assign({},x,{type:e.target.value}):x))}>
+                          <option value="revolving">revolving</option>
+                          <option value="installment">installment</option>
+                        </select>
+                      </td>
+                      <td className="p-3 text-right">
+                        <input type="number" className="input w-full sm:w-28 text-right" value={d.balance}
+                          onChange={e=>setDebts(ds=>ds.map(x=>x.id===d.id?Object.assign({},x,{balance:Number(e.target.value)}):x))} />
+                      </td>
+                      <td className="p-3 text-right">
+                        <input type="number" step="0.01" className="input w-full sm:w-20 text-right" value={d.rateAPR}
+                          onChange={e=>setDebts(ds=>ds.map(x=>x.id===d.id?Object.assign({},x,{rateAPR:Number(e.target.value)}):x))} />
+                      </td>
+                      <td className="p-3 text-right">
+                        <input type="number" className="input w-full sm:w-20 text-right" value={d.minPay}
+                          onChange={e=>setDebts(ds=>ds.map(x=>x.id===d.id?Object.assign({},x,{minPay:Number(e.target.value)}):x))} />
+                      </td>
+                      <td className="p-3 text-right">
+                        <input type="number" step="0.1" className="input w-full sm:w-20 text-right" value={d.minPayPct}
+                          onChange={e=>setDebts(ds=>ds.map(x=>x.id===d.id?Object.assign({},x,{minPayPct:Number(e.target.value)}):x))} />
+                      </td>
+                      <td className="p-3 text-right">
+                        <input type="number" className="input w-full sm:w-24 text-right" value={d.extraMonthly}
+                          onChange={e=>setDebts(ds=>ds.map(x=>x.id===d.id?Object.assign({},x,{extraMonthly:Number(e.target.value)}):x))} />
+                      </td>
+                      <td className="p-3 text-center">
+                        <button className="text-red-400 hover:text-red-300" onClick={()=>setDebts(ds=>ds.filter(x=>x.id!==d.id))}>Delete</button>
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="border-t border-slate-800">
+                    <td className="p-3" colSpan="8">
+                      <button className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 rounded w-full sm:w-auto"
+                        onClick={()=>setDebts(ds=>ds.concat([{ id: uid(), name: "New Debt", balance: 0, rateAPR: 0, minPay: 0, type: "revolving", minPayPct: 0, extraMonthly: 0 }]))}>
+                        Add Debt
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      }
+function CopyControls(props){
         // EDIT: Source month defaults to previous of active; supports cross-year prev/next
         var _a = React.useState(prevMonthKey(props.activeMonth)), source = _a[0], setSource = _a[1];
         var _b = React.useState("append"), mode = _b[0], setMode = _b[1];
@@ -692,6 +1052,26 @@
                     }} />
                   </label>
                   <button className="px-3 py-2 bg-red-600 hover:bg-red-500 rounded w-full sm:w-auto" onClick={function(){ setData(seed()); }}>Reset</button>
+                <button className="btn" onClick={async function(){
+                    try{
+                      const r = await fetch("http://localhost:4000/api/ob/auth-url");
+                      const j = await r.json();
+                      if(!j.url){ alert("No auth URL from backend"); return; }
+                      window.open(j.url, "_blank", "width=480,height=700");
+                    }catch(err){ alert("Failed to start bank link"); }
+                  }}>Connect bank</button>
+                  <button className="btn" onClick={async function(){
+                    try{
+                      const r = await fetch("http://localhost:4000/api/transactions");
+                      const j = await r.json();
+                      if(!j.transactions){ alert("No transactions from backend"); return; }
+                      const mapped = j.transactions.map(function(t){
+                        return { id: uid(), date: t.date, payee: t.payee, category: t.category || "", amount: Number(t.amount||0) };
+                      });
+                      setMonth(activeMonth, function(m){ return Object.assign({}, m, { transactions: mapped.concat(m.transactions) }); });
+                      alert("Imported " + mapped.length + " transactions.");
+                    }catch(err){ alert("Sync failed"); }
+                  }}>Sync transactions</button>
                 </div>
               </div>
 
@@ -754,7 +1134,7 @@
 
               {tab === "year" ? (<Section title="Year"><YearView year={data.settings.year} months={data.months} /></Section>) : null}
 
-              {tab === "debts" ? (<Section title="Debts"><DebtsView debts={data.debts} setDebts={setDebts} ccy={settings.currency} /></Section>) : null}
+              {tab === "debts" ? (<Section title="Debts"><DebtsViewPro debts={data.debts} setDebts={setDebts} ccy={settings.currency} /></Section>) : null}
 
               {tab === "goals" ? (<Section title="Goals"><GoalsView goals={data.goals} setGoals={setGoals} ccy={settings.currency} /></Section>) : null}
 
@@ -767,12 +1147,12 @@
                     <li>In <span className="font-medium">Month</span>, pick a month; add transactions. Use <span className="font-medium">Save Version</span> to snapshot and restore later.</li>
                     <li><span className="font-medium">Year</span> shows 12‑month income/expense/net.</li>
                     <li><span className="font-medium">Debts</span>, <span className="font-medium">Goals</span>, and <span className="font-medium">Net Worth</span> are tracked at the yearly level.</li>
-                    <li>All data is stored locally. Use <span className="font-medium">Export/Import</span> to back up.</li>
+                    <li>All data is stored locally. Use <span className="font-medium">Export/Import</span> to back up. Connect a bank via an Open Banking backend (TrueLayer/Plaid/Yapily) using the Connect/Sync buttons.</li>
                   </ol>
                 </Section>
               ) : null}
 
-              <footer className="mt-8 text-center text-xs text-slate-500">React (single file) • Local only • v1.6 (Mobile + Desktop)</footer>
+              <footer className="mt-8 text-center text-xs text-slate-500">React (single file) • Local only • v1.8 (Mobile + Desktop + Pro Debts)</footer>
             </div>
           </div>
         );
